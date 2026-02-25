@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投资监控系统 - 配置</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 导航栏 -->
+        <nav class="navbar">
+            <div class="nav-logo">
+                <i class="bi bi-bar-chart-line"></i>
+                <span>投资监控系统</span>
+            </div>
+            <div class="nav-menu">
+                <a href="/" class="nav-link active">配置中心</a>
+                <a href="/monitor" class="nav-link">实时监控</a>
+            </div>
+        </nav>
+        
+        <!-- 头部 -->
+        <header class="header">
+            <div class="header-content">
+                <h1>监控配置中心</h1>
+                <p class="header-desc">配置您需要监控的指数和基金，设置刷新频率，开始监控</p>
+            </div>
+        </header>
+        
+        <!-- 配置面板 -->
+        <section class="card">
+            <h2 class="card-title">监控配置</h2>
+            <form id="config-form">
+                <div class="config-grid">
+                    <div class="form-group">
+                        <label for="indices" class="form-label">指数配置（格式：名称|代码，每行一个）</label>
+                        <textarea id="indices" class="form-control" placeholder="例如：
+上证指数|sh000001
+深证成指|sz399001
+创业板指|sz399006"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="funds" class="form-label">基金代码（多个用空格分隔）</label>
+                        <textarea id="funds" class="form-control" placeholder="例如：015790 002112 009854"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="refresh_interval" class="form-label">刷新间隔（秒，建议30+）</label>
+                        <input type="number" id="refresh_interval" class="form-control" min="10" max="300" value="30">
+                    </div>
+                </div>
+                
+                <div class="info-text">
+                    <strong>配置说明：</strong>
+                    <ul>
+                        <li>指数格式必须是 名称|代码（如：上证指数|sh000001）</li>
+                        <li>基金代码直接输入，多个用空格分隔</li>
+                        <li>刷新间隔建议30秒以上，避免接口访问限制</li>
+                        <li>配置完成后点击"保存配置"，然后前往实时监控页面查看数据</li>
+                    </ul>
+                </div>
+                
+                <div class="btn-container">
+                    <button type="submit" class="btn" id="save-config">
+                        <i class="bi bi-save btn-icon"></i>
+                        保存配置
+                    </button>
+                    <button type="button" class="btn btn-outline" id="goto-monitor" style="margin-left: 10px;">
+                        <i class="bi bi-eye btn-icon"></i>
+                        前往实时监控
+                    </button>
+                </div>
+                
+                <div id="message-container"></div>
+            </form>
+        </section>
+    </div>
+    
+    <!-- 前端脚本 -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 获取默认配置
+            fetch('/api/get_config')
+                .then(response => {
+                    // 先检查响应状态，避免解析HTML报错
+                    if (!response.ok) throw new Error(`接口返回错误：${response.status}`);
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('indices').value = data.config.indices;
+                        document.getElementById('funds').value = data.config.funds;
+                        // 兼容后端没有返回refresh_interval的情况
+                        if (data.config.refresh_interval) {
+                            document.getElementById('refresh_interval').value = data.config.refresh_interval;
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('加载默认配置失败：', error);
+                    document.getElementById('message-container').innerHTML = `
+                        <div class="message-box error">
+                            加载默认配置失败：${error.message}
+                        </div>
+                    `;
+                });
+
+            // 配置提交（核心修复：接口路径+错误处理）
+            document.getElementById('config-form').addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // 收集配置数据
+                const config = {
+                    indices: document.getElementById('indices').value,
+                    funds: document.getElementById('funds').value,
+                    refresh_interval: document.getElementById('refresh_interval').value
+                };
+
+                // 发送配置请求（修复接口路径为 /api/save_config）
+                fetch('/api/save_config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json' // 明确要求JSON响应
+                    },
+                    body: JSON.stringify(config)
+                })
+                .then(response => {
+                    // 第一步：检查响应状态，避免解析HTML
+                    if (!response.ok) {
+                        throw new Error(`配置保存失败：HTTP ${response.status} (${response.statusText})`);
+                    }
+                    // 第二步：尝试解析JSON（防止返回非JSON数据）
+                    return response.json().catch(err => {
+                        throw new Error('服务器返回非JSON格式数据，请检查后端接口');
+                    });
+                })
+                .then(data => {
+                    const messageContainer = document.getElementById('message-container');
+                    if (data.success) {
+                        messageContainer.innerHTML = `
+                            <div class="message-box success">
+                                ${data.message || '配置保存成功！'}
+                            </div>
+                        `;
+                    } else {
+                        messageContainer.innerHTML = `
+                            <div class="message-box error">
+                                ${data.message || '配置保存失败，请检查格式'}
+                            </div>
+                        `;
+                    }
+                    
+                    // 5秒后清除提示
+                    setTimeout(() => {
+                        messageContainer.innerHTML = '';
+                    }, 5000);
+                })
+                .catch(error => {
+                    // 捕获所有错误（网络/404/500/解析错误）
+                    console.error('配置提交异常：', error);
+                    document.getElementById('message-container').innerHTML = `
+                        <div class="message-box error">
+                            配置提交失败：${error.message}
+                        </div>
+                    `;
+                });
+            });
+            
+            // 前往监控页面
+            document.getElementById('goto-monitor').addEventListener('click', function() {
+                window.location.href = '/monitor';
+            });
+        });
+    </script>
+</body>
+</html>
