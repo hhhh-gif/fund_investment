@@ -36,14 +36,73 @@ monitor_cache = {
 }
 
 # ===================== 实时监控核心函数 =====================
+def get_index_detail(index_code, index_name):
+    # 先检查缓存，30秒内不重复请求
+    if index_name in monitor_cache["index_detail_cache"] and time.time() - monitor_cache["index_detail_cache"][index_name]["cache_time"] < 30:
+        return monitor_cache["index_detail_cache"][index_name]["data"]
+    
+    # 修复请求头，模拟真实浏览器
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://finance.sina.com.cn/",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive"
+    }
+    try:
+        # 修复URL，去掉多余参数，使用标准格式
+        url = f"https://hq.sinajs.cn/list={index_code}"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()  # 检查HTTP状态码
+        
+        raw_data = resp.text.strip()
+        if not raw_data:
+            print(f"指数{index_name}返回空数据")
+            return None
+        
+        # 解析数据
+        data_part = raw_data.split('="')[-1].strip('";')
+        data_list = data_part.split(',')
+        
+        if len(data_list) >= 32:  # 新浪返回数据长度足够
+            current_price = float(data_list[3])   # 当前价
+            pre_close = float(data_list[2])       # 昨收价
+            change_amount = round(current_price - pre_close, 2)
+            change = round((current_price - pre_close) / pre_close * 100, 2)
+            
+            detail = {
+                "name": index_name,
+                "code": index_code,
+                "current_price": current_price,
+                "pre_close": pre_close,
+                "change_amount": change_amount,
+                "change": change
+            }
+            monitor_cache["index_detail_cache"][index_name] = {"cache_time": time.time(), "data": detail}
+            return detail
+        else:
+            print(f"指数{index_name}数据格式异常，长度：{len(data_list)}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"指数{index_name}请求失败：{str(e)}")
+        return None
+    except Exception as e:
+        print(f"指数{index_name}解析失败：{str(e)}")
+        return None
+
 def get_fund_detail(fund_code):
-    """获取基金实时详情（适配实时监控）"""
-    if fund_code in monitor_cache["fund_detail_cache"] and time.time() - monitor_cache["fund_detail_cache"][fund_code]["cache_time"] < 3600:
+    if fund_code in monitor_cache["fund_detail_cache"] and time.time() - monitor_cache["fund_detail_cache"][fund_code]["cache_time"] < 30:
         return monitor_cache["fund_detail_cache"][fund_code]["data"]
     
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://fund.eastmoney.com/"}
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://fund.eastmoney.com/",
+        "Cache-Control": "no-cache"
+    }
     try:
-        resp = requests.get(f"https://fundgz.1234567.com.cn/js/{fund_code}.js", headers=headers, timeout=8)
+        # 添加时间戳避免缓存
+        url = f"https://fundgz.1234567.com.cn/js/{fund_code}.js?rt={int(time.time() * 1000)}"
+        resp = requests.get(url, headers=headers, timeout=8)
         match = re.search(r'\{.*\}', resp.text.strip())
         if not match:
             return None
@@ -62,38 +121,6 @@ def get_fund_detail(fund_code):
         return detail
     except Exception as e:
         print(f"获取基金{fund_code}详情失败：{e}")
-        return None
-
-def get_index_detail(index_code, index_name):
-    """获取指数实时详情（适配实时监控）"""
-    if index_name in monitor_cache["index_detail_cache"] and time.time() - monitor_cache["index_detail_cache"][index_name]["cache_time"] < 300:
-        return monitor_cache["index_detail_cache"][index_name]["data"]
-    
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
-    try:
-        resp = requests.get(f"https://hq.sinajs.cn/list={index_code}", headers=headers, timeout=8)
-        data_part = resp.text.strip().split('="')[-1].strip('";')
-        data_list = data_part.split(',')
-        
-        if len(data_list) >= 10:
-            current_price = float(data_list[3])
-            pre_close = float(data_list[2])
-            change_amount = round(current_price - pre_close, 2)
-            change = round((current_price - pre_close) / pre_close * 100, 2)
-            
-            detail = {
-                "name": index_name,
-                "code": index_code,
-                "current_price": current_price,
-                "pre_close": pre_close,
-                "change_amount": change_amount,
-                "change": change
-            }
-            monitor_cache["index_detail_cache"][index_name] = {"cache_time": time.time(), "data": detail}
-            return detail
-        return None
-    except Exception as e:
-        print(f"获取指数{index_name}详情失败：{e}")
         return None
 
 def calculate_metrics(indices, funds):
@@ -204,13 +231,13 @@ def calculate_metrics(indices, funds):
     }
 
 def get_all_data(incremental=False):
-    """获取所有实时数据（核心，适配实时监控）"""
+    """获取所有实时数据（核心修复：增量数据仅传递单次值）"""
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     indices_data = []
     funds_data = []
     errors = []
     
-    # 重置增量数据
+    # 重置增量数据（每次请求都清空，只存本次最新值）
     monitor_cache["incremental_data"] = {"indices": {}, "funds": {}}
     
     # 获取指数数据
@@ -218,7 +245,7 @@ def get_all_data(incremental=False):
         index_detail = get_index_detail(code, index_name)
         if index_detail:
             indices_data.append(index_detail)
-            # 记录增量数据
+            # 增量数据仅存本次最新涨跌幅（单次值）
             monitor_cache["incremental_data"]["indices"][index_name] = index_detail["change"]
         else:
             errors.append(f"指数{index_name}数据获取失败")
@@ -228,7 +255,7 @@ def get_all_data(incremental=False):
         fund_detail = get_fund_detail(fund_code)
         if fund_detail:
             funds_data.append(fund_detail)
-            # 记录增量数据
+            # 增量数据仅存本次最新涨跌幅（单次值）
             monitor_cache["incremental_data"]["funds"][fund_code] = float(fund_detail["change"])
         else:
             errors.append(f"基金{fund_code}数据获取失败")
@@ -236,29 +263,23 @@ def get_all_data(incremental=False):
     # 计算指标
     metrics = calculate_metrics(indices_data, funds_data)
     
-    # 增量更新：添加历史数据点
+    # 页面内实时历史（仅用于首次渲染的初始数据，增量更新由前端维护）
     if not incremental:
-        # 首次加载：清空历史
+        # 首次加载：初始化空历史（避免后端传递旧数据）
         monitor_cache["history"] = {
             "time": [], 
-            "original_time": [], 
             "index_data": defaultdict(list), 
             "fund_data": defaultdict(list)
         }
     else:
-        # 增量更新：添加新时间点
+        # 增量更新：后端仅记录，前端负责渲染（核心：只追加本次时间和值）
         monitor_cache["history"]["time"].append(current_time)
-        monitor_cache["history"]["original_time"].append(datetime.datetime.now())
-        
-        # 记录指数历史
         for idx in indices_data:
             monitor_cache["history"]["index_data"][idx["name"]].append(idx["change"])
-        
-        # 记录基金历史
         for fund in funds_data:
             monitor_cache["history"]["fund_data"][fund["code"]].append(float(fund["change"]))
     
-    # 构建返回数据
+    # 构建返回数据（移除冗余的original_time，简化结构）
     result = {
         "time": current_time,
         "indices": indices_data,
